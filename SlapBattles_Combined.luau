@@ -62,6 +62,7 @@ local state = {
 	alive = true,
 	glovesOn = false,
 	slapOn = false,
+	targetFarmOn = false,
 	autoTP = true,
 	stealth = true,
 	slapInterval = 2.0,
@@ -75,7 +76,15 @@ local state = {
 	rejoining = false,
 	lastStealthRefresh = 0,
 	lastFireAt = 0,
+	targetName = nil,
 }
+
+local playerListFrame
+local playerListLayout
+local selectedLabel
+local stopTargetBtn
+local targetFarmBtn
+local playerRowButtons = {}
 
 local bRemote = ReplicatedStorage:WaitForChild("b")
 local generalHit = ReplicatedStorage:FindFirstChild("GeneralHit")
@@ -138,8 +147,92 @@ end
 local function refreshButtons()
 	setToggleVisual("gloves", state.glovesOn)
 	setToggleVisual("slap", state.slapOn)
+	setToggleVisual("targetFarm", state.targetFarmOn)
 	setToggleVisual("autoTP", state.autoTP)
 	setToggleVisual("stealth", state.stealth)
+end
+
+local function updateSelectedLabel()
+	if not selectedLabel then
+		return
+	end
+	if state.targetName then
+		selectedLabel.Text = "TARGET · " .. state.targetName
+		selectedLabel.TextColor3 = COLORS.signal
+	else
+		selectedLabel.Text = "TARGET · none"
+		selectedLabel.TextColor3 = COLORS.mute
+	end
+end
+
+local function isOtherInArena(other)
+	local ch = other and other.Character
+	if not ch then
+		return false
+	end
+	local arena = ch:FindFirstChild("isInArena")
+	return arena ~= nil and arena.Value == true
+end
+
+local function refreshPlayerRows()
+	if not playerListFrame then
+		return
+	end
+	for _, btn in pairs(playerRowButtons) do
+		if btn and btn.Parent then
+			btn:Destroy()
+		end
+	end
+	table.clear(playerRowButtons)
+	local names = {}
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other ~= player then
+			table.insert(names, other.Name)
+		end
+	end
+	table.sort(names)
+	for i, name in ipairs(names) do
+		local other = Players:FindFirstChild(name)
+		local inArena = other and isOtherInArena(other)
+		local selected = state.targetName == name
+		local row = Instance.new("TextButton")
+		row.Name = name
+		row.AutoButtonColor = false
+		row.BackgroundColor3 = selected and COLORS.trackOn or COLORS.void
+		row.BorderSizePixel = 0
+		row.Size = UDim2.new(1, -8, 0, 28)
+		row.Font = Enum.Font.GothamMedium
+		row.TextSize = 12
+		row.TextColor3 = selected and COLORS.signal or (inArena and COLORS.soft or COLORS.mute)
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.Text = "  " .. name .. (inArena and "  · arena" or "  · lobby")
+		row.LayoutOrder = i
+		row.Parent = playerListFrame
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 4)
+		corner.Parent = row
+		track(row.MouseButton1Click:Connect(function()
+			state.targetName = name
+			updateSelectedLabel()
+			refreshPlayerRows()
+			if state.targetFarmOn then
+				setStatus("> target · " .. name, COLORS.signal)
+			else
+				setStatus("> selected · " .. name, COLORS.mute)
+			end
+		end))
+		playerRowButtons[name] = row
+	end
+	playerListFrame.CanvasSize = UDim2.fromOffset(0, math.max(0, #names * 32))
+end
+
+local function clearTarget()
+	state.targetName = nil
+	state.targetFarmOn = false
+	updateSelectedLabel()
+	refreshButtons()
+	refreshPlayerRows()
+	setStatus("> target cleared", COLORS.mute)
 end
 
 local function resolveLobby()
@@ -677,7 +770,7 @@ local function enterArena()
 	end
 	task.wait(RESPAWN_WAIT)
 	if amInArena() then
-		if state.stealth and state.slapOn then
+		if state.stealth and (state.slapOn or state.targetFarmOn) then
 			enableStealth()
 		end
 		state.rejoining = false
@@ -697,10 +790,10 @@ local function enterArena()
 	end
 	root.CFrame = tele.CFrame + Vector3.new(0, 4, 0)
 	local deadline = tick() + 12
-	while state.alive and state.slapOn and tick() < deadline do
+	while state.alive and (state.slapOn or state.targetFarmOn) and tick() < deadline do
 		if amInArena() then
 			task.wait(ARENA_ENTER_WAIT)
-			if state.stealth and state.slapOn then
+			if state.stealth and (state.slapOn or state.targetFarmOn) then
 				enableStealth()
 			end
 			state.rejoining = false
@@ -714,7 +807,7 @@ local function enterArena()
 	return false
 end
 
-local function collectAuraTargets()
+local function collectAuraTargets(onlyName)
 	local hrp = myHRP()
 	if not hrp then
 		return {}
@@ -722,6 +815,9 @@ local function collectAuraTargets()
 	local list = {}
 	for _, other in ipairs(Players:GetPlayers()) do
 		if other ~= player and other.Character then
+			if onlyName and other.Name ~= onlyName then
+				continue
+			end
 			local ch = other.Character
 			local arena = ch:FindFirstChild("isInArena")
 			local vuln = ch:FindFirstChild("TSVulnerability")
@@ -796,9 +892,13 @@ local function strikeTarget(entry)
 	return false
 end
 
+local function slapActive()
+	return state.slapOn or state.targetFarmOn
+end
+
 local function slapFarmLoop()
 	while state.alive do
-		if not state.slapOn then
+		if not slapActive() then
 			task.wait(0.2)
 			continue
 		end
@@ -816,10 +916,33 @@ local function slapFarmLoop()
 				state.lastStealthRefresh = tick()
 			end
 		end
-		local targets = collectAuraTargets()
+		local filterName = nil
+		if state.targetFarmOn then
+			if not state.targetName then
+				setStatus("pick target in list…", Color3.fromRGB(220, 180, 100))
+				task.wait(0.4)
+				continue
+			end
+			filterName = state.targetName
+		end
+		local targets = collectAuraTargets(filterName)
 		if #targets == 0 then
-			setStatus("waiting target…", Color3.fromRGB(220, 180, 100))
+			if filterName then
+				local targetPlr = Players:FindFirstChild(filterName)
+				if not targetPlr then
+					setStatus("offline · " .. filterName, COLORS.err)
+				elseif not isOtherInArena(targetPlr) then
+					setStatus("not in arena · " .. filterName, Color3.fromRGB(220, 180, 100))
+				else
+					setStatus("waiting · " .. filterName, Color3.fromRGB(220, 180, 100))
+				end
+			else
+				setStatus("waiting target…", Color3.fromRGB(220, 180, 100))
+			end
 			task.wait(0.5)
+			if filterName and tick() % 2 < 0.6 then
+				refreshPlayerRows()
+			end
 			continue
 		end
 		local entry = targets[1]
@@ -831,10 +954,11 @@ local function slapFarmLoop()
 		local slaps = player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Slaps")
 		local got = slaps and (slaps.Value - state.sessionStart) or 0
 		local tag = state.stealth and " · stealth" or ""
+		local mode = filterName and " · LOCK" or ""
 		if hitOk then
-			setStatus("hit · +" .. tostring(got) .. " · " .. lastName .. tag, COLORS.ok)
+			setStatus("hit · +" .. tostring(got) .. " · " .. lastName .. mode .. tag, COLORS.ok)
 		else
-			setStatus("skip/cd · " .. lastName .. tag, COLORS.muted)
+			setStatus("skip/cd · " .. lastName .. mode .. tag, COLORS.muted)
 		end
 		local waitTime = math.max(1.0, state.slapInterval)
 		local jitter = (math.random() * 2 - 1) * SLAP_JITTER
@@ -967,12 +1091,24 @@ local function destroy()
 	state.alive = false
 	state.glovesOn = false
 	state.slapOn = false
+	state.targetFarmOn = false
 	disableStealth()
 	disconnectAll()
 	if screenGui then
 		screenGui:Destroy()
 	end
 	getgenv().SlapBattlesCombined = nil
+end
+
+local function armSlapSession()
+	local slaps = player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Slaps")
+	state.sessionStart = slaps and slaps.Value or 0
+	if state.stealth then
+		enableStealth()
+	end
+	if not amInArena() then
+		task.spawn(enterArena)
+	end
 end
 
 local function buildMenu()
@@ -992,8 +1128,8 @@ local function buildMenu()
 	mainFrame.Name = "Main"
 	mainFrame.BackgroundColor3 = COLORS.shell
 	mainFrame.BorderSizePixel = 0
-	mainFrame.Size = UDim2.fromOffset(340, 392)
-	mainFrame.Position = UDim2.new(0, 24, 0.5, -196)
+	mainFrame.Size = UDim2.fromOffset(340, 640)
+	mainFrame.Position = UDim2.new(0, 24, 0.5, -320)
 	mainFrame.Active = true
 	mainFrame.ClipsDescendants = true
 	mainFrame.Parent = screenGui
@@ -1083,14 +1219,15 @@ local function buildMenu()
 
 	glovesBtn = makeToggleRow(mainFrame, "gloves", "Gloves Farm", 118, false)
 	slapBtn = makeToggleRow(mainFrame, "slap", "Slap Farm", 168, false)
-	tpBtn = makeToggleRow(mainFrame, "autoTP", "Auto Teleport", 218, true)
-	stealthBtn = makeToggleRow(mainFrame, "stealth", "Stealth", 268, true)
+	targetFarmBtn = makeToggleRow(mainFrame, "targetFarm", "Target Farm", 218, false)
+	tpBtn = makeToggleRow(mainFrame, "autoTP", "Auto Teleport", 268, true)
+	stealthBtn = makeToggleRow(mainFrame, "stealth", "Stealth", 318, true)
 
 	local intRow = Instance.new("Frame")
 	intRow.BackgroundColor3 = COLORS.panel
 	intRow.BorderSizePixel = 0
 	intRow.Size = UDim2.new(1, -28, 0, 44)
-	intRow.Position = UDim2.fromOffset(14, 318)
+	intRow.Position = UDim2.fromOffset(14, 368)
 	intRow.Parent = mainFrame
 	addCorner(intRow, 6)
 	addStroke(intRow, COLORS.line, 1)
@@ -1130,6 +1267,78 @@ local function buildMenu()
 	addCorner(intervalBox, 4)
 	addStroke(intervalBox, COLORS.line, 1)
 
+	local playersSection = Instance.new("TextLabel")
+	playersSection.BackgroundTransparency = 1
+	playersSection.Font = Enum.Font.Code
+	playersSection.TextSize = 10
+	playersSection.TextColor3 = COLORS.mute
+	playersSection.TextXAlignment = Enum.TextXAlignment.Left
+	playersSection.Text = "PLAYERS"
+	playersSection.Size = UDim2.new(1, -28, 0, 14)
+	playersSection.Position = UDim2.fromOffset(18, 422)
+	playersSection.Parent = mainFrame
+
+	selectedLabel = Instance.new("TextLabel")
+	selectedLabel.BackgroundTransparency = 1
+	selectedLabel.Font = Enum.Font.Code
+	selectedLabel.TextSize = 11
+	selectedLabel.TextColor3 = COLORS.mute
+	selectedLabel.TextXAlignment = Enum.TextXAlignment.Left
+	selectedLabel.Text = "TARGET · none"
+	selectedLabel.Size = UDim2.new(1, -120, 0, 14)
+	selectedLabel.Position = UDim2.fromOffset(18, 438)
+	selectedLabel.Parent = mainFrame
+
+	local refreshPlayersBtn = Instance.new("TextButton")
+	refreshPlayersBtn.AutoButtonColor = false
+	refreshPlayersBtn.BackgroundColor3 = COLORS.panel
+	refreshPlayersBtn.Font = Enum.Font.Code
+	refreshPlayersBtn.TextSize = 10
+	refreshPlayersBtn.TextColor3 = COLORS.soft
+	refreshPlayersBtn.Text = "REFRESH"
+	refreshPlayersBtn.Size = UDim2.fromOffset(64, 20)
+	refreshPlayersBtn.Position = UDim2.new(1, -86, 0, 434)
+	refreshPlayersBtn.Parent = mainFrame
+	addCorner(refreshPlayersBtn, 4)
+	addStroke(refreshPlayersBtn, COLORS.line, 1)
+
+	playerListFrame = Instance.new("ScrollingFrame")
+	playerListFrame.BackgroundColor3 = COLORS.panel
+	playerListFrame.BorderSizePixel = 0
+	playerListFrame.Size = UDim2.new(1, -28, 0, 110)
+	playerListFrame.Position = UDim2.fromOffset(14, 458)
+	playerListFrame.ScrollBarThickness = 4
+	playerListFrame.ScrollBarImageColor3 = COLORS.signal
+	playerListFrame.CanvasSize = UDim2.fromOffset(0, 0)
+	playerListFrame.AutomaticCanvasSize = Enum.AutomaticSize.None
+	playerListFrame.Parent = mainFrame
+	addCorner(playerListFrame, 6)
+	addStroke(playerListFrame, COLORS.line, 1)
+
+	local listPad = Instance.new("UIPadding")
+	listPad.PaddingTop = UDim.new(0, 4)
+	listPad.PaddingLeft = UDim.new(0, 4)
+	listPad.PaddingRight = UDim.new(0, 4)
+	listPad.Parent = playerListFrame
+
+	playerListLayout = Instance.new("UIListLayout")
+	playerListLayout.Padding = UDim.new(0, 4)
+	playerListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	playerListLayout.Parent = playerListFrame
+
+	stopTargetBtn = Instance.new("TextButton")
+	stopTargetBtn.AutoButtonColor = false
+	stopTargetBtn.BackgroundColor3 = COLORS.panel
+	stopTargetBtn.Font = Enum.Font.GothamBold
+	stopTargetBtn.TextSize = 13
+	stopTargetBtn.TextColor3 = COLORS.danger
+	stopTargetBtn.Text = "STOP TARGET"
+	stopTargetBtn.Size = UDim2.new(1, -28, 0, 34)
+	stopTargetBtn.Position = UDim2.fromOffset(14, 576)
+	stopTargetBtn.Parent = mainFrame
+	addCorner(stopTargetBtn, 6)
+	addStroke(stopTargetBtn, COLORS.line, 1)
+
 	statusLabel = Instance.new("TextLabel")
 	statusLabel.BackgroundTransparency = 1
 	statusLabel.Font = Enum.Font.Code
@@ -1139,7 +1348,7 @@ local function buildMenu()
 	statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	statusLabel.Text = "> ready  ·  G hide"
 	statusLabel.Size = UDim2.new(1, -28, 0, 16)
-	statusLabel.Position = UDim2.fromOffset(18, 370)
+	statusLabel.Position = UDim2.fromOffset(18, 616)
 	statusLabel.Parent = mainFrame
 
 	local credit = Instance.new("TextLabel")
@@ -1165,21 +1374,37 @@ local function buildMenu()
 
 	track(slapBtn.MouseButton1Click:Connect(function()
 		state.slapOn = not state.slapOn
-		refreshButtons()
 		if state.slapOn then
-			local slaps = player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Slaps")
-			state.sessionStart = slaps and slaps.Value or 0
-			if state.stealth then
-				enableStealth()
-			end
-			if not amInArena() then
-				task.spawn(enterArena)
-			end
+			state.targetFarmOn = false
+			armSlapSession()
 			setStatus("> slap farm armed", COLORS.signal)
 		else
-			disableStealth()
+			if not state.targetFarmOn then
+				disableStealth()
+			end
 			setStatus("> slap farm idle", COLORS.mute)
 		end
+		refreshButtons()
+	end))
+
+	track(targetFarmBtn.MouseButton1Click:Connect(function()
+		if not state.targetName then
+			setStatus("> pick player first", COLORS.err)
+			refreshPlayerRows()
+			return
+		end
+		state.targetFarmOn = not state.targetFarmOn
+		if state.targetFarmOn then
+			state.slapOn = false
+			armSlapSession()
+			setStatus("> target farm · " .. state.targetName, COLORS.signal)
+		else
+			if not state.slapOn then
+				disableStealth()
+			end
+			setStatus("> target farm idle", COLORS.mute)
+		end
+		refreshButtons()
 	end))
 
 	track(tpBtn.MouseButton1Click:Connect(function()
@@ -1190,7 +1415,7 @@ local function buildMenu()
 
 	track(stealthBtn.MouseButton1Click:Connect(function()
 		state.stealth = not state.stealth
-		if state.stealth and state.slapOn then
+		if state.stealth and slapActive() then
 			enableStealth()
 		elseif not state.stealth then
 			disableStealth()
@@ -1210,6 +1435,18 @@ local function buildMenu()
 		refreshButtons()
 	end))
 
+	track(refreshPlayersBtn.MouseButton1Click:Connect(function()
+		refreshPlayerRows()
+		setStatus("> players refreshed", COLORS.mute)
+	end))
+
+	track(stopTargetBtn.MouseButton1Click:Connect(function()
+		clearTarget()
+		if not state.slapOn then
+			disableStealth()
+		end
+	end))
+
 	track(UserInputService.InputBegan:Connect(function(input, processed)
 		if processed or not state.alive then
 			return
@@ -1219,7 +1456,23 @@ local function buildMenu()
 		end
 	end))
 
+	track(Players.PlayerAdded:Connect(function()
+		task.defer(refreshPlayerRows)
+	end))
+	track(Players.PlayerRemoving:Connect(function(leaving)
+		if state.targetName == leaving.Name then
+			clearTarget()
+			if not state.slapOn then
+				disableStealth()
+			end
+		else
+			task.defer(refreshPlayerRows)
+		end
+	end))
+
 	refreshButtons()
+	refreshPlayerRows()
+	updateSelectedLabel()
 end
 
 buildMenu()
@@ -1229,12 +1482,12 @@ task.spawn(slapFarmLoop)
 track(player.CharacterAdded:Connect(function()
 	clearLocalClone()
 	state.stealthOn = false
-	if not state.alive or not state.slapOn then
+	if not state.alive or not slapActive() then
 		return
 	end
 	task.spawn(function()
 		task.wait(0.8)
-		if state.alive and state.slapOn then
+		if state.alive and slapActive() then
 			enterArena()
 		end
 	end)
@@ -1248,13 +1501,30 @@ getgenv().SlapBattlesCombined = {
 	end,
 	setSlap = function(v)
 		state.slapOn = v and true or false
-		if state.slapOn and state.stealth then
-			enableStealth()
+		if state.slapOn then
+			state.targetFarmOn = false
+			armSlapSession()
+		elseif not state.targetFarmOn then
+			disableStealth()
+		end
+		refreshButtons()
+	end,
+	setTargetFarm = function(v, name)
+		if name then
+			state.targetName = name
+			updateSelectedLabel()
+			refreshPlayerRows()
+		end
+		state.targetFarmOn = v and true or false
+		if state.targetFarmOn then
+			state.slapOn = false
+			armSlapSession()
 		elseif not state.slapOn then
 			disableStealth()
 		end
 		refreshButtons()
 	end,
+	clearTarget = clearTarget,
 }
 
-print("[SlapBattlesCombined] gloves + slap farm")
+print("[SlapBattlesCombined] gloves + slap farm + target farm")
