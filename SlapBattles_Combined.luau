@@ -149,7 +149,7 @@ local function setToggleVisual(key, on)
 		return
 	end
 	local goalTrack = on and COLORS.trackOn or COLORS.trackOff
-	local goalKnob = on and 15 or 2
+	local goalKnob = on and 16 or 2
 	local goalDot = on and COLORS.signal or COLORS.mute
 	TweenService:Create(ui.track, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		BackgroundColor3 = goalTrack,
@@ -200,12 +200,14 @@ local function refreshPlayerRows()
 	if not playerListFrame then
 		return
 	end
-	for _, btn in pairs(playerRowButtons) do
-		if btn and btn.Parent then
-			btn:Destroy()
+	for name, btn in pairs(playerRowButtons) do
+		if btn then
+			pcall(function()
+				btn:Destroy()
+			end)
 		end
+		playerRowButtons[name] = nil
 	end
-	table.clear(playerRowButtons)
 	local names = {}
 	for _, other in ipairs(Players:GetPlayers()) do
 		if other ~= player then
@@ -222,18 +224,22 @@ local function refreshPlayerRows()
 		row.AutoButtonColor = false
 		row.BackgroundColor3 = selected and COLORS.trackOn or COLORS.void
 		row.BorderSizePixel = 0
-		row.Size = UDim2.new(1, -2, 0, isMobileUi() and 24 or 18)
+		row.Size = UDim2.new(1, -6, 0, 22)
 		row.Font = Enum.Font.GothamMedium
-		row.TextSize = isMobileUi() and 11 or 10
+		row.TextSize = 11
 		row.TextColor3 = selected and COLORS.signal or (inArena and COLORS.soft or COLORS.mute)
 		row.TextXAlignment = Enum.TextXAlignment.Left
-		row.Text = " " .. name .. (inArena and " ·A" or " ·L")
+		row.TextTruncate = Enum.TextTruncate.AtEnd
+		row.Text = "  " .. name .. (inArena and " ·A" or " ·L")
 		row.LayoutOrder = i
 		row.Parent = playerListFrame
 		local corner = Instance.new("UICorner")
 		corner.CornerRadius = UDim.new(0, 3)
 		corner.Parent = row
-		track(row.MouseButton1Click:Connect(function()
+		row.MouseButton1Click:Connect(function()
+			if not state.alive then
+				return
+			end
 			state.targetName = name
 			updateSelectedLabel()
 			refreshPlayerRows()
@@ -242,11 +248,10 @@ local function refreshPlayerRows()
 			else
 				setStatus("> selected · " .. name, COLORS.mute)
 			end
-		end))
+		end)
 		playerRowButtons[name] = row
 	end
-	local rowH = isMobileUi() and 27 or 21
-	playerListFrame.CanvasSize = UDim2.fromOffset(0, math.max(0, #names * rowH))
+	playerListFrame.CanvasSize = UDim2.fromOffset(0, math.max(0, #names * 26))
 end
 
 local function clearTarget()
@@ -954,10 +959,17 @@ local function slapFarmLoop()
 				local targetPlr = Players:FindFirstChild(filterName)
 				if not targetPlr then
 					setStatus("offline · " .. filterName, COLORS.err)
+				elseif not targetPlr.Character then
+					setStatus("no char · " .. filterName, Color3.fromRGB(220, 180, 100))
 				elseif not isOtherInArena(targetPlr) then
 					setStatus("not in arena · " .. filterName, Color3.fromRGB(220, 180, 100))
 				else
-					setStatus("waiting · " .. filterName, Color3.fromRGB(220, 180, 100))
+					local hum = targetPlr.Character:FindFirstChildOfClass("Humanoid")
+					if not hum or hum.Health <= 0 then
+						setStatus("dead · " .. filterName, Color3.fromRGB(220, 180, 100))
+					else
+						setStatus("waiting · " .. filterName, Color3.fromRGB(220, 180, 100))
+					end
 				end
 			else
 				setStatus("waiting target…", Color3.fromRGB(220, 180, 100))
@@ -1004,54 +1016,29 @@ local function addStroke(parent, color, thickness)
 	return stroke
 end
 
-local function isMobileUi()
-	return UserInputService.TouchEnabled
-end
-
-local function getViewport()
-	local cam = Workspace.CurrentCamera
-	if cam then
-		return cam.ViewportSize
-	end
-	return Vector2.new(800, 600)
-end
-
-local function clampMenuToScreen(frame)
-	if not frame or not frame.Parent then
-		return
-	end
-	local vs = getViewport()
-	local size = frame.AbsoluteSize
-	local pos = frame.AbsolutePosition
-	local x = math.clamp(pos.X, 4, math.max(4, vs.X - size.X - 4))
-	local y = math.clamp(pos.Y, 4, math.max(4, vs.Y - size.Y - 4))
-	frame.Position = UDim2.fromOffset(math.floor(x), math.floor(y))
-end
-
 local function makeDraggable(frame, handle)
 	local dragging = false
 	local dragStart
 	local startPos
-	local function beginDrag(input)
+	track(handle.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
 			dragStart = input.Position
 			startPos = frame.Position
 		end
-	end
+	end))
 	local function stopDrag(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			if dragging then
-				dragging = false
-				clampMenuToScreen(frame)
-			end
+			dragging = false
 		end
 	end
-	local function moveDrag(input)
+	track(handle.InputEnded:Connect(stopDrag))
+	track(UserInputService.InputEnded:Connect(stopDrag))
+	track(UserInputService.InputChanged:Connect(function(input)
 		if not dragging or not state.alive then
 			return
 		end
-		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		if input.UserInputType == Enum.UserInputType.MouseMovement then
 			local delta = input.Position - dragStart
 			frame.Position = UDim2.new(
 				startPos.X.Scale,
@@ -1060,74 +1047,67 @@ local function makeDraggable(frame, handle)
 				startPos.Y.Offset + delta.Y
 			)
 		end
-	end
-	track(handle.InputBegan:Connect(beginDrag))
-	track(handle.InputChanged:Connect(moveDrag))
-	track(handle.InputEnded:Connect(stopDrag))
-	track(UserInputService.InputChanged:Connect(moveDrag))
-	track(UserInputService.InputEnded:Connect(stopDrag))
+	end))
 end
 
-local function makeToggleRow(parent, key, title, layoutOrder, defaultOn)
-	local mobile = isMobileUi()
-	local rowH = mobile and 24 or 20
+local function makeToggleRow(parent, key, title, y, defaultOn)
 	local row = Instance.new("TextButton")
 	row.Name = key
 	row.AutoButtonColor = false
 	row.BackgroundColor3 = COLORS.panel
 	row.BorderSizePixel = 0
-	row.Size = UDim2.new(1, 0, 0, rowH)
-	row.LayoutOrder = layoutOrder
+	row.Size = UDim2.new(1, -20, 0, 28)
+	row.Position = UDim2.fromOffset(10, y)
 	row.Text = ""
 	row.Parent = parent
-	addCorner(row, 3)
+	addCorner(row, 5)
 	addStroke(row, COLORS.line, 1)
 
 	local dot = Instance.new("Frame")
 	dot.BackgroundColor3 = defaultOn and COLORS.signal or COLORS.mute
 	dot.BorderSizePixel = 0
-	dot.Size = UDim2.fromOffset(3, 3)
-	dot.Position = UDim2.fromOffset(6, math.floor(rowH / 2) - 1)
+	dot.Size = UDim2.fromOffset(4, 4)
+	dot.Position = UDim2.fromOffset(10, 12)
 	dot.Parent = row
 	addCorner(dot, 2)
 
 	local label = Instance.new("TextLabel")
 	label.BackgroundTransparency = 1
 	label.Font = Enum.Font.GothamMedium
-	label.TextSize = mobile and 11 or 10
+	label.TextSize = 12
 	label.TextColor3 = COLORS.text
 	label.TextXAlignment = Enum.TextXAlignment.Left
 	label.Text = title
-	label.Size = UDim2.new(1, -70, 1, 0)
-	label.Position = UDim2.fromOffset(14, 0)
+	label.Size = UDim2.new(1, -90, 1, 0)
+	label.Position = UDim2.fromOffset(20, 0)
 	label.Parent = row
 
 	local value = Instance.new("TextLabel")
 	value.BackgroundTransparency = 1
 	value.Font = Enum.Font.Code
-	value.TextSize = 8
+	value.TextSize = 9
 	value.TextColor3 = defaultOn and COLORS.signal or COLORS.mute
 	value.TextXAlignment = Enum.TextXAlignment.Right
 	value.Text = defaultOn and "ON" or "OFF"
-	value.Size = UDim2.fromOffset(20, rowH)
-	value.Position = UDim2.new(1, -56, 0, 0)
+	value.Size = UDim2.fromOffset(22, 28)
+	value.Position = UDim2.new(1, -70, 0, 0)
 	value.Parent = row
 
 	local track = Instance.new("Frame")
 	track.BackgroundColor3 = defaultOn and COLORS.trackOn or COLORS.trackOff
 	track.BorderSizePixel = 0
-	track.Size = UDim2.fromOffset(28, 14)
-	track.Position = UDim2.new(1, -34, 0.5, -7)
+	track.Size = UDim2.fromOffset(30, 16)
+	track.Position = UDim2.new(1, -42, 0.5, -8)
 	track.Parent = row
-	addCorner(track, 3)
+	addCorner(track, 4)
 
 	local knob = Instance.new("Frame")
 	knob.BackgroundColor3 = COLORS.knob
 	knob.BorderSizePixel = 0
-	knob.Size = UDim2.fromOffset(10, 10)
-	knob.Position = UDim2.fromOffset(defaultOn and 15 or 2, 2)
+	knob.Size = UDim2.fromOffset(12, 12)
+	knob.Position = UDim2.fromOffset(defaultOn and 16 or 2, 2)
 	knob.Parent = track
-	addCorner(knob, 2)
+	addCorner(knob, 3)
 
 	toggleUI[key] = {
 		row = row,
@@ -1137,6 +1117,19 @@ local function makeToggleRow(parent, key, title, layoutOrder, defaultOn)
 		value = value,
 	}
 	return row
+end
+
+local function toggleMenuVisible()
+	if not mainFrame then
+		return
+	end
+	mainFrame.Visible = not mainFrame.Visible
+end
+
+local function hideMenu()
+	if mainFrame then
+		mainFrame.Visible = false
+	end
 end
 
 local function destroy()
@@ -1177,6 +1170,10 @@ local function destroy()
 	getgenv().SlapBattlesCombined = nil
 end
 
+getgenv().SlapBattlesCombined = {
+	destroy = destroy,
+}
+
 local function armSlapSession()
 	local slaps = player:FindFirstChild("leaderstats") and player.leaderstats:FindFirstChild("Slaps")
 	state.sessionStart = slaps and slaps.Value or 0
@@ -1187,6 +1184,38 @@ local function armSlapSession()
 		task.spawn(enterArena)
 	end
 end
+
+getgenv().SlapBattlesCombined.setGloves = function(v)
+	state.glovesOn = v and true or false
+	refreshButtons()
+end
+getgenv().SlapBattlesCombined.setSlap = function(v)
+	state.slapOn = v and true or false
+	if state.slapOn then
+		state.targetFarmOn = false
+		armSlapSession()
+	elseif not state.targetFarmOn then
+		disableStealth()
+	end
+	refreshButtons()
+end
+getgenv().SlapBattlesCombined.setTargetFarm = function(v, name)
+	if name then
+		state.targetName = name
+		updateSelectedLabel()
+		refreshPlayerRows()
+	end
+	state.targetFarmOn = v and true or false
+	if state.targetFarmOn then
+		state.slapOn = false
+		armSlapSession()
+	elseif not state.slapOn then
+		disableStealth()
+	end
+	refreshButtons()
+end
+getgenv().SlapBattlesCombined.clearTarget = clearTarget
+getgenv().SlapBattlesCombined.refreshPlayers = refreshPlayerRows
 
 local function buildMenu()
 	screenGui = Instance.new("ScreenGui")
@@ -1202,62 +1231,46 @@ local function buildMenu()
 		screenGui.Parent = playerGui
 	end
 
-	local mobile = isMobileUi()
-	local vs = getViewport()
-	local menuW = math.clamp(math.floor(vs.X * (mobile and 0.88 or 0.38)), mobile and 280 or 340, mobile and math.min(480, vs.X - 12) or 420)
-	local menuH = math.clamp(math.floor(vs.Y * (mobile and 0.36 or 0.3)), mobile and 190 or 210, mobile and math.min(250, vs.Y - 20) or 260)
-	if menuW <= menuH then
-		menuW = menuH + 90
-	end
-	local pad = 5
-	local headerH = mobile and 32 or 30
-
 	mainFrame = Instance.new("Frame")
 	mainFrame.Name = "Main"
 	mainFrame.BackgroundColor3 = COLORS.shell
 	mainFrame.BorderSizePixel = 0
-	mainFrame.Size = UDim2.fromOffset(menuW, menuH)
-	mainFrame.Position = UDim2.fromOffset(math.floor((vs.X - menuW) * 0.5), math.floor((vs.Y - menuH) * 0.5))
+	mainFrame.Size = UDim2.fromOffset(252, 418)
+	mainFrame.Position = UDim2.new(0, 18, 0.5, -209)
 	mainFrame.Active = true
 	mainFrame.ClipsDescendants = true
 	mainFrame.Parent = screenGui
-	addCorner(mainFrame, 8)
+	addCorner(mainFrame, 7)
 	addStroke(mainFrame, COLORS.line, 1)
+
+	local wash = Instance.new("Frame")
+	wash.BackgroundColor3 = COLORS.void
+	wash.BackgroundTransparency = 0.35
+	wash.BorderSizePixel = 0
+	wash.Size = UDim2.new(1, 0, 0, 56)
+	wash.Parent = mainFrame
 
 	local signalBar = Instance.new("Frame")
 	signalBar.BackgroundColor3 = COLORS.signal
 	signalBar.BorderSizePixel = 0
-	signalBar.Size = UDim2.new(0, 3, 1, 0)
+	signalBar.Size = UDim2.new(0, 2, 1, 0)
 	signalBar.Parent = mainFrame
 
-	local header = Instance.new("TextButton")
-	header.Name = "DragHandle"
-	header.AutoButtonColor = false
-	header.BackgroundColor3 = COLORS.void
-	header.BackgroundTransparency = 0.2
-	header.BorderSizePixel = 0
-	header.Text = ""
-	header.Size = UDim2.new(1, -3, 0, headerH)
-	header.Position = UDim2.fromOffset(3, 0)
+	local header = Instance.new("Frame")
+	header.BackgroundTransparency = 1
+	header.Size = UDim2.new(1, -2, 0, 52)
+	header.Position = UDim2.fromOffset(2, 0)
 	header.Parent = mainFrame
-
-	local grip = Instance.new("Frame")
-	grip.BackgroundColor3 = COLORS.mute
-	grip.BorderSizePixel = 0
-	grip.Size = UDim2.fromOffset(28, 3)
-	grip.Position = UDim2.new(0.5, -14, 0, 4)
-	grip.Parent = header
-	addCorner(grip, 2)
 
 	local brand = Instance.new("TextLabel")
 	brand.BackgroundTransparency = 1
 	brand.Font = Enum.Font.GothamBold
-	brand.TextSize = 15
+	brand.TextSize = 18
 	brand.TextColor3 = COLORS.text
 	brand.TextXAlignment = Enum.TextXAlignment.Left
 	brand.Text = "AETHER"
-	brand.Size = UDim2.new(0.45, 0, 1, 0)
-	brand.Position = UDim2.fromOffset(10, 0)
+	brand.Size = UDim2.new(1, -52, 0, 22)
+	brand.Position = UDim2.fromOffset(12, 8)
 	brand.Parent = header
 
 	local tag = Instance.new("TextLabel")
@@ -1266,82 +1279,92 @@ local function buildMenu()
 	tag.TextSize = 9
 	tag.TextColor3 = COLORS.signal
 	tag.TextXAlignment = Enum.TextXAlignment.Left
-	tag.Text = mobile and "drag · scroll" or "SLAP // CONTROL"
-	tag.Size = UDim2.new(0.4, 0, 1, 0)
-	tag.Position = UDim2.fromOffset(90, 0)
+	tag.Text = "SLAP // CONTROL"
+	tag.Size = UDim2.new(1, -52, 0, 12)
+	tag.Position = UDim2.fromOffset(12, 30)
 	tag.Parent = header
 
 	local closeButton = Instance.new("TextButton")
 	closeButton.AutoButtonColor = false
 	closeButton.BackgroundColor3 = COLORS.panel
 	closeButton.Font = Enum.Font.GothamBold
-	closeButton.TextSize = 11
+	closeButton.TextSize = 18
 	closeButton.TextColor3 = COLORS.soft
-	closeButton.Text = "X"
-	closeButton.Size = UDim2.fromOffset(22, 22)
-	closeButton.Position = UDim2.new(1, -28, 0.5, -11)
+	closeButton.Text = "✕"
+	closeButton.Size = UDim2.fromOffset(36, 36)
+	closeButton.Position = UDim2.new(1, -44, 0, 8)
 	closeButton.Parent = header
-	addCorner(closeButton, 4)
+	addCorner(closeButton, 6)
 	addStroke(closeButton, COLORS.line, 1)
-	track(closeButton.MouseButton1Click:Connect(destroy))
+	track(closeButton.MouseButton1Click:Connect(hideMenu))
+	track(closeButton.MouseEnter:Connect(function()
+		closeButton.TextColor3 = COLORS.danger
+	end))
+	track(closeButton.MouseLeave:Connect(function()
+		closeButton.TextColor3 = COLORS.soft
+	end))
 
 	makeDraggable(mainFrame, header)
 
-	local body = Instance.new("ScrollingFrame")
-	body.Name = "Body"
-	body.BackgroundTransparency = 1
-	body.BorderSizePixel = 0
-	body.Size = UDim2.new(1, -3, 1, -(headerH + 20))
-	body.Position = UDim2.fromOffset(3, headerH)
-	body.ScrollBarThickness = mobile and 4 or 3
-	body.ScrollBarImageColor3 = COLORS.signal
-	body.ScrollingDirection = Enum.ScrollingDirection.Y
-	body.CanvasSize = UDim2.fromOffset(0, 0)
-	body.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	body.Parent = mainFrame
+	local openBtn = Instance.new("TextButton")
+	openBtn.Name = "OpenBtn"
+	openBtn.AutoButtonColor = false
+	openBtn.BackgroundColor3 = COLORS.shell
+	openBtn.Font = Enum.Font.GothamBold
+	openBtn.TextSize = 16
+	openBtn.TextColor3 = COLORS.signal
+	openBtn.Text = "A"
+	openBtn.Size = UDim2.fromOffset(44, 44)
+	openBtn.Position = UDim2.new(0, 18, 1, -70)
+	openBtn.ZIndex = 60
+	openBtn.Parent = screenGui
+	addCorner(openBtn, 8)
+	addStroke(openBtn, COLORS.signal, 1)
+	local openMark = Instance.new("Frame")
+	openMark.BackgroundColor3 = COLORS.signal
+	openMark.BorderSizePixel = 0
+	openMark.Size = UDim2.new(0, 3, 1, 0)
+	openMark.ZIndex = 61
+	openMark.Parent = openBtn
+	track(openBtn.MouseButton1Click:Connect(toggleMenuVisible))
 
-	local bodyPad = Instance.new("UIPadding")
-	bodyPad.PaddingTop = UDim.new(0, 4)
-	bodyPad.PaddingBottom = UDim.new(0, 6)
-	bodyPad.PaddingLeft = UDim.new(0, pad)
-	bodyPad.PaddingRight = UDim.new(0, pad)
-	bodyPad.Parent = body
-
-	local bodyLayout = Instance.new("UIListLayout")
-	bodyLayout.Padding = UDim.new(0, 3)
-	bodyLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	bodyLayout.Parent = body
+	local divider = Instance.new("Frame")
+	divider.BackgroundColor3 = COLORS.line
+	divider.BorderSizePixel = 0
+	divider.Size = UDim2.new(1, -24, 0, 1)
+	divider.Position = UDim2.fromOffset(12, 52)
+	divider.Parent = mainFrame
 
 	local section = Instance.new("TextLabel")
 	section.BackgroundTransparency = 1
 	section.Font = Enum.Font.Code
-	section.TextSize = 8
+	section.TextSize = 9
 	section.TextColor3 = COLORS.mute
 	section.TextXAlignment = Enum.TextXAlignment.Left
 	section.Text = "MODULES"
-	section.Size = UDim2.new(1, 0, 0, 10)
-	section.LayoutOrder = 1
-	section.Parent = body
+	section.Size = UDim2.new(1, -20, 0, 12)
+	section.Position = UDim2.fromOffset(12, 56)
+	section.Parent = mainFrame
 
-	glovesBtn = makeToggleRow(body, "gloves", "Gloves Farm", 2, false)
-	slapBtn = makeToggleRow(body, "slap", "Slap Farm", 3, false)
-	targetFarmBtn = makeToggleRow(body, "targetFarm", "Target Farm", 4, false)
-	tpBtn = makeToggleRow(body, "autoTP", "Auto Teleport", 5, true)
-	stealthBtn = makeToggleRow(body, "stealth", "Stealth", 6, true)
+	glovesBtn = makeToggleRow(mainFrame, "gloves", "Gloves Farm", 70, false)
+	slapBtn = makeToggleRow(mainFrame, "slap", "Slap Farm", 102, false)
+	targetFarmBtn = makeToggleRow(mainFrame, "targetFarm", "Target Farm", 134, false)
+	tpBtn = makeToggleRow(mainFrame, "autoTP", "Auto Teleport", 166, true)
+	stealthBtn = makeToggleRow(mainFrame, "stealth", "Stealth", 198, true)
 
 	local intRow = Instance.new("Frame")
 	intRow.BackgroundColor3 = COLORS.panel
 	intRow.BorderSizePixel = 0
-	intRow.Size = UDim2.new(1, 0, 0, mobile and 28 or 24)
-	intRow.LayoutOrder = 7
-	intRow.Parent = body
-	addCorner(intRow, 4)
+	intRow.Size = UDim2.new(1, -20, 0, 28)
+	intRow.Position = UDim2.fromOffset(10, 232)
+	intRow.Parent = mainFrame
+	addCorner(intRow, 5)
 	addStroke(intRow, COLORS.line, 1)
 
 	local intLabel = Instance.new("TextLabel")
 	intLabel.BackgroundTransparency = 1
 	intLabel.Font = Enum.Font.GothamMedium
-	intLabel.TextSize = mobile and 12 or 11
+	intLabel.TextSize = 12
 	intLabel.TextColor3 = COLORS.text
 	intLabel.TextXAlignment = Enum.TextXAlignment.Left
 	intLabel.Text = "Interval"
@@ -1355,39 +1378,34 @@ local function buildMenu()
 	intUnit.TextSize = 9
 	intUnit.TextColor3 = COLORS.mute
 	intUnit.Text = "SEC"
-	intUnit.Size = UDim2.fromOffset(24, mobile and 28 or 24)
+	intUnit.Size = UDim2.fromOffset(24, 28)
 	intUnit.Position = UDim2.new(1, -28, 0, 0)
 	intUnit.Parent = intRow
 
 	intervalBox = Instance.new("TextBox")
-	intervalBox.Size = UDim2.fromOffset(40, mobile and 20 or 18)
-	intervalBox.Position = UDim2.new(1, -74, 0.5, mobile and -10 or -9)
+	intervalBox.Size = UDim2.fromOffset(40, 20)
+	intervalBox.Position = UDim2.new(1, -74, 0.5, -10)
 	intervalBox.BackgroundColor3 = COLORS.void
 	intervalBox.TextColor3 = COLORS.signal
 	intervalBox.Text = "2.0"
 	intervalBox.Font = Enum.Font.Code
-	intervalBox.TextSize = 11
+	intervalBox.TextSize = 12
 	intervalBox.ClearTextOnFocus = false
 	intervalBox.BorderSizePixel = 0
 	intervalBox.Parent = intRow
 	addCorner(intervalBox, 3)
 	addStroke(intervalBox, COLORS.line, 1)
 
-	local playersHead = Instance.new("Frame")
-	playersHead.BackgroundTransparency = 1
-	playersHead.Size = UDim2.new(1, 0, 0, 18)
-	playersHead.LayoutOrder = 8
-	playersHead.Parent = body
-
 	local playersSection = Instance.new("TextLabel")
 	playersSection.BackgroundTransparency = 1
 	playersSection.Font = Enum.Font.Code
-	playersSection.TextSize = 8
+	playersSection.TextSize = 9
 	playersSection.TextColor3 = COLORS.mute
 	playersSection.TextXAlignment = Enum.TextXAlignment.Left
 	playersSection.Text = "PLAYERS"
-	playersSection.Size = UDim2.new(0.3, 0, 1, 0)
-	playersSection.Parent = playersHead
+	playersSection.Size = UDim2.new(1, -90, 0, 12)
+	playersSection.Position = UDim2.fromOffset(12, 266)
+	playersSection.Parent = mainFrame
 
 	selectedLabel = Instance.new("TextLabel")
 	selectedLabel.BackgroundTransparency = 1
@@ -1396,9 +1414,9 @@ local function buildMenu()
 	selectedLabel.TextColor3 = COLORS.mute
 	selectedLabel.TextXAlignment = Enum.TextXAlignment.Left
 	selectedLabel.Text = "TARGET · none"
-	selectedLabel.Size = UDim2.new(0.5, 0, 1, 0)
-	selectedLabel.Position = UDim2.fromOffset(70, 0)
-	selectedLabel.Parent = playersHead
+	selectedLabel.Size = UDim2.new(1, -90, 0, 12)
+	selectedLabel.Position = UDim2.fromOffset(12, 280)
+	selectedLabel.Parent = mainFrame
 
 	local refreshPlayersBtn = Instance.new("TextButton")
 	refreshPlayersBtn.AutoButtonColor = false
@@ -1407,35 +1425,34 @@ local function buildMenu()
 	refreshPlayersBtn.TextSize = 9
 	refreshPlayersBtn.TextColor3 = COLORS.soft
 	refreshPlayersBtn.Text = "SYNC"
-	refreshPlayersBtn.Size = UDim2.fromOffset(40, 16)
-	refreshPlayersBtn.Position = UDim2.new(1, -40, 0.5, -8)
-	refreshPlayersBtn.Parent = playersHead
-	addCorner(refreshPlayersBtn, 3)
+	refreshPlayersBtn.Size = UDim2.fromOffset(44, 18)
+	refreshPlayersBtn.Position = UDim2.new(1, -54, 0, 268)
+	refreshPlayersBtn.Parent = mainFrame
+	addCorner(refreshPlayersBtn, 4)
 	addStroke(refreshPlayersBtn, COLORS.line, 1)
 
 	playerListFrame = Instance.new("ScrollingFrame")
 	playerListFrame.BackgroundColor3 = COLORS.panel
 	playerListFrame.BorderSizePixel = 0
-	playerListFrame.Size = UDim2.new(1, 0, 0, mobile and 64 or 58)
-	playerListFrame.LayoutOrder = 9
-	playerListFrame.ScrollBarThickness = mobile and 4 or 3
+	playerListFrame.Size = UDim2.new(1, -20, 0, 72)
+	playerListFrame.Position = UDim2.fromOffset(10, 296)
+	playerListFrame.ScrollBarThickness = 3
 	playerListFrame.ScrollBarImageColor3 = COLORS.signal
-	playerListFrame.ScrollingDirection = Enum.ScrollingDirection.Y
 	playerListFrame.CanvasSize = UDim2.fromOffset(0, 0)
 	playerListFrame.AutomaticCanvasSize = Enum.AutomaticSize.None
-	playerListFrame.Parent = body
-	addCorner(playerListFrame, 4)
+	playerListFrame.ClipsDescendants = true
+	playerListFrame.Parent = mainFrame
+	addCorner(playerListFrame, 5)
 	addStroke(playerListFrame, COLORS.line, 1)
 
 	local listPad = Instance.new("UIPadding")
-	listPad.PaddingTop = UDim.new(0, 2)
-	listPad.PaddingLeft = UDim.new(0, 2)
-	listPad.PaddingRight = UDim.new(0, 2)
-	listPad.PaddingBottom = UDim.new(0, 2)
+	listPad.PaddingTop = UDim.new(0, 3)
+	listPad.PaddingLeft = UDim.new(0, 3)
+	listPad.PaddingRight = UDim.new(0, 3)
 	listPad.Parent = playerListFrame
 
 	playerListLayout = Instance.new("UIListLayout")
-	playerListLayout.Padding = UDim.new(0, 2)
+	playerListLayout.Padding = UDim.new(0, 3)
 	playerListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	playerListLayout.Parent = playerListFrame
 
@@ -1446,10 +1463,10 @@ local function buildMenu()
 	stopTargetBtn.TextSize = 11
 	stopTargetBtn.TextColor3 = COLORS.danger
 	stopTargetBtn.Text = "STOP TARGET"
-	stopTargetBtn.Size = UDim2.new(1, 0, 0, mobile and 26 or 22)
-	stopTargetBtn.LayoutOrder = 10
-	stopTargetBtn.Parent = body
-	addCorner(stopTargetBtn, 4)
+	stopTargetBtn.Size = UDim2.new(1, -20, 0, 26)
+	stopTargetBtn.Position = UDim2.fromOffset(10, 374)
+	stopTargetBtn.Parent = mainFrame
+	addCorner(stopTargetBtn, 5)
 	addStroke(stopTargetBtn, COLORS.line, 1)
 
 	statusLabel = Instance.new("TextLabel")
@@ -1459,9 +1476,9 @@ local function buildMenu()
 	statusLabel.TextColor3 = COLORS.mute
 	statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 	statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
-	statusLabel.Text = mobile and "> ready · drag" or "> ready · G"
-	statusLabel.Size = UDim2.new(1, -10, 0, 14)
-	statusLabel.Position = UDim2.fromOffset(8, menuH - 16)
+	statusLabel.Text = "> ready · A / G"
+	statusLabel.Size = UDim2.new(1, -20, 0, 14)
+	statusLabel.Position = UDim2.fromOffset(12, 402)
 	statusLabel.Parent = mainFrame
 
 	local credit = Instance.new("TextLabel")
@@ -1474,14 +1491,10 @@ local function buildMenu()
 	credit.TextXAlignment = Enum.TextXAlignment.Right
 	credit.TextYAlignment = Enum.TextYAlignment.Bottom
 	credit.Text = "By Fr0st1208"
-	credit.Size = UDim2.fromOffset(100, 14)
-	credit.Position = UDim2.new(1, -110, 1, -18)
+	credit.Size = UDim2.fromOffset(110, 14)
+	credit.Position = UDim2.new(1, -122, 1, -20)
 	credit.ZIndex = 50
 	credit.Parent = screenGui
-
-	task.defer(function()
-		clampMenuToScreen(mainFrame)
-	end)
 
 	track(glovesBtn.MouseButton1Click:Connect(function()
 		state.glovesOn = not state.glovesOn
@@ -1569,7 +1582,7 @@ local function buildMenu()
 			return
 		end
 		if input.KeyCode == MENU_TOGGLE_KEY then
-			mainFrame.Visible = not mainFrame.Visible
+			toggleMenuVisible()
 		end
 	end))
 
@@ -1590,9 +1603,9 @@ local function buildMenu()
 	refreshButtons()
 	refreshPlayerRows()
 	updateSelectedLabel()
+	task.defer(refreshPlayerRows)
 end
 
-buildMenu()
 task.spawn(glovesFarmLoop)
 task.spawn(slapFarmLoop)
 
@@ -1610,38 +1623,5 @@ track(player.CharacterAdded:Connect(function()
 	end)
 end))
 
-getgenv().SlapBattlesCombined = {
-	destroy = destroy,
-	setGloves = function(v)
-		state.glovesOn = v and true or false
-		refreshButtons()
-	end,
-	setSlap = function(v)
-		state.slapOn = v and true or false
-		if state.slapOn then
-			state.targetFarmOn = false
-			armSlapSession()
-		elseif not state.targetFarmOn then
-			disableStealth()
-		end
-		refreshButtons()
-	end,
-	setTargetFarm = function(v, name)
-		if name then
-			state.targetName = name
-			updateSelectedLabel()
-			refreshPlayerRows()
-		end
-		state.targetFarmOn = v and true or false
-		if state.targetFarmOn then
-			state.slapOn = false
-			armSlapSession()
-		elseif not state.slapOn then
-			disableStealth()
-		end
-		refreshButtons()
-	end,
-	clearTarget = clearTarget,
-}
-
+buildMenu()
 print("[SlapBattlesCombined] gloves + slap farm + target farm")
